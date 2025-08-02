@@ -1,7 +1,7 @@
 import os
 import logging
 from typing import Dict, Any, Optional
-import fitz  # PyMuPDF
+import pdfplumber
 import docx
 from PIL import Image
 import pytesseract
