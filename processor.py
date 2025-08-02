@@ -1,10 +1,9 @@
 import os
 import logging
 from typing import Dict, Any, Optional
-import pdfplumber
+import pdfplumber  # Changed from PyMuPDF
 import docx
 from PIL import Image
-import pytesseract
 import openai
 import re
 from datetime import datetime
@@ -14,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class DocumentProcessor:
-    """Simplified document processor for Streamlit"""
+    """Cloud-compatible document processor for Streamlit"""
     
     def __init__(self):
         self.openai_client = None
@@ -93,43 +92,51 @@ class DocumentProcessor:
         }
         
         if file_ext == '.pdf':
-            return self._extract_pdf(file_path, metadata)
+            return self._extract_pdf_pdfplumber(file_path, metadata)
         elif file_ext in ['.docx', '.doc']:
             return self._extract_docx(file_path, metadata)
         elif file_ext in ['.png', '.jpg', '.jpeg', '.tiff', '.bmp']:
-            return self._extract_image(file_path, metadata)
+            return self._extract_image_basic(file_path, metadata)
         else:
             raise ValueError(f"Unsupported file type: {file_ext}")
     
-    def _extract_pdf(self, file_path: str, metadata: Dict) -> tuple[str, Dict]:
-        """Extract text from PDF"""
+    def _extract_pdf_pdfplumber(self, file_path: str, metadata: Dict) -> tuple[str, Dict]:
+        """Extract text from PDF using pdfplumber"""
         try:
             content_parts = []
-            with fitz.open(file_path) as doc:
+            tables_found = 0
+            
+            with pdfplumber.open(file_path) as pdf:
                 metadata.update({
-                    "pages": doc.page_count,
-                    "title": doc.metadata.get("title", ""),
-                    "author": doc.metadata.get("author", "")
+                    "pages": len(pdf.pages),
+                    "pdf_info": pdf.metadata or {}
                 })
                 
-                for page_num in range(doc.page_count):
-                    page = doc.load_page(page_num)
-                    text = page.get_text()
-                    if text.strip():
+                for page_num, page in enumerate(pdf.pages):
+                    # Extract text
+                    text = page.extract_text()
+                    if text and text.strip():
                         content_parts.append(f"[Page {page_num + 1}]\n{text}")
-                    else:
-                        # Try OCR for image-based pages
-                        pix = page.get_pixmap()
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        ocr_text = pytesseract.image_to_string(img, lang='ind+eng')
-                        if ocr_text.strip():
-                            content_parts.append(f"[Page {page_num + 1} - OCR]\n{ocr_text}")
+                    
+                    # Extract tables
+                    tables = page.extract_tables()
+                    if tables:
+                        tables_found += len(tables)
+                        for i, table in enumerate(tables):
+                            if table:
+                                table_text = f"\n[Table {i+1} - Page {page_num + 1}]\n"
+                                for row in table:
+                                    if row:
+                                        table_text += " | ".join([str(cell) if cell else "" for cell in row]) + "\n"
+                                content_parts.append(table_text)
+                
+                metadata["tables_found"] = tables_found
             
             return '\n\n'.join(content_parts), metadata
             
         except Exception as e:
             logger.error(f"PDF extraction failed: {e}")
-            return "", metadata
+            return f"Error extracting PDF: {str(e)}", metadata
     
     def _extract_docx(self, file_path: str, metadata: Dict) -> tuple[str, Dict]:
         """Extract text from DOCX"""
@@ -170,31 +177,25 @@ class DocumentProcessor:
             
         except Exception as e:
             logger.error(f"DOCX extraction failed: {e}")
-            return "", metadata
+            return f"Error extracting DOCX: {str(e)}", metadata
     
-    def _extract_image(self, file_path: str, metadata: Dict) -> tuple[str, Dict]:
-        """Extract text from image using OCR"""
+    def _extract_image_basic(self, file_path: str, metadata: Dict) -> tuple[str, Dict]:
+        """Basic image info extraction (no OCR in cloud)"""
         try:
-            # Indonesian + English OCR
-            text = pytesseract.image_to_string(
-                Image.open(file_path), 
-                lang='ind+eng',
-                config='--oem 3 --psm 6'
-            )
-            
-            # Get image info
             with Image.open(file_path) as img:
                 metadata.update({
                     "width": img.width,
                     "height": img.height,
-                    "format": img.format
+                    "format": img.format,
+                    "mode": img.mode
                 })
             
-            return text.strip(), metadata
+            # Return message instead of OCR
+            return f"Image uploaded: {img.width}x{img.height} {img.format}\nNote: OCR not available in cloud version", metadata
             
         except Exception as e:
-            logger.error(f"Image OCR failed: {e}")
-            return "", metadata
+            logger.error(f"Image processing failed: {e}")
+            return f"Error processing image: {str(e)}", metadata
     
     def _extract_entities(self, content: str, indonesian_mode: bool = True) -> Dict[str, Any]:
         """Extract entities from content"""
